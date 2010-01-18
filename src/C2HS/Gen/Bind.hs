@@ -128,7 +128,7 @@ import C2HS.State  (CST, errorsPresent, showErrors, fatal,
                    SwitchBoard(..), Traces(..), putTraceStr, getSwitch)
 import C2HS.C     (AttrC, CObj(..), CTag(..),
                    CDecl(..), CDeclSpec(..), CTypeSpec(..),
-                   CStructUnion(..), CStructTag(..), CEnum(..), CDeclr(..),
+                   CStructUnion(..), CStructTag(..), CEnum(..), CDeclr(..), CAttr(..),
                    CDerivedDeclr(..),CArrSize(..),
                    CExpr(..), CBinaryOp(..), CUnaryOp(..), CConst (..),
                    CInteger(..),cInteger,getCInteger,getCCharAsInt,
@@ -141,7 +141,7 @@ import C2HS.C     (AttrC, CObj(..), CTag(..),
                    checkForAlias, checkForOneAliasName, checkForOneCUName,
                    lookupEnum, lookupStructUnion, lookupDeclOrTag, isPtrDeclr,
                    dropPtrDeclr, isPtrDecl, getDeclOf, isFunDeclr,
-                   refersToNewDef, CDef(..))
+                   refersToNewDef, partitionDeclSpecs, CDef(..))
 
 -- friends
 import C2HS.CHS   (CHSModule(..), CHSFrag(..), CHSHook(..),
@@ -153,7 +153,6 @@ import C2HS.Gen.Monad    (TransFun, transTabToTransFun, HsObject(..), GB,
                    initialGBState, setContext, getPrefix,
                    delayCode, getDelayedCode, ptrMapsTo, queryPtr, objIs,
                    queryClass, queryPointer, mergeMaps, dumpMaps)
-
 
 -- default marshallers
 -- -------------------
@@ -705,7 +704,7 @@ enumBody indent ((ide, _):list)  =
 
 
 -- | Num instance for C Integers
--- We should preserve type flags and repr if possible 
+-- We should preserve type flags and repr if possible
 instance Num CInteger where
   fromInteger = cInteger
   (+) a b = cInteger (getCInteger a + getCInteger b)
@@ -754,6 +753,13 @@ enumInst ident list =
         --
         show' x = if x < 0 then "(" ++ show x ++ ")" else show x
 
+getCallingConvention :: CDecl -> String
+getCallingConvention (CDecl specs _  _) =
+  if hasStdCall then "stdcall" else "ccall"
+    where hasStdCall' (CAttr x _ _) = identToString x == "__stdcall__"
+          hasStdCall = any hasStdCall' attributes
+          attributes = ((\(_,attrs,_,_,_) -> attrs) . partitionDeclSpecs) specs
+
 -- | generate a foreign import declaration that is put into the delayed code
 --
 -- * the C declaration is a simplified declaration of the function that we
@@ -768,8 +774,9 @@ callImport hook isPure isUns ideLexeme hsLexeme cdecl pos =
     --
     extType <- extractFunType pos cdecl isPure
     header  <- getSwitch headerSB
+    let ccall = getCallingConvention cdecl
     when (isVariadic extType) (variadicErr pos (posOf cdecl))
-    delayCode hook (foreignImport header ideLexeme hsLexeme isUns extType)
+    delayCode hook (foreignImport ccall header ideLexeme hsLexeme isUns extType)
     traceFunType extType
   where
     traceFunType et = traceGenBind $
@@ -791,9 +798,9 @@ callImportDyn hook _isPure isUns ideLexeme hsLexeme ty pos =
 
 -- | Haskell code for the foreign import declaration needed by a call hook
 --
-foreignImport :: String -> String -> String -> Bool -> ExtType -> String
-foreignImport header ident hsIdent isUnsafe ty  =
-  "foreign import ccall " ++ safety ++ " " ++ show (header ++ " " ++ ident) ++
+foreignImport :: String -> String -> String -> String -> Bool -> ExtType -> String
+foreignImport ccall header ident hsIdent isUnsafe ty  =
+  "foreign import " ++ ccall ++ " " ++ safety ++ " " ++ show (header ++ " " ++ ident) ++
   "\n  " ++ hsIdent ++ " :: " ++ showExtType ty ++ "\n"
   where
     safety = if isUnsafe then "unsafe" else "safe"
@@ -1958,7 +1965,7 @@ evalConstCExpr (CVar ide''' at) =
   do
     (cobj, _) <- findValueObj ide''' False
     case cobj of
-      EnumCO ide'' (CEnum _ (Just enumrs) _ _) -> 
+      EnumCO ide'' (CEnum _ (Just enumrs) _ _) ->
         liftM IntResult $ enumTagValue ide'' enumrs 0
       _                             ->
         todo $ "GenBind.evalConstCExpr: variable names not implemented yet " ++
